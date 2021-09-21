@@ -1,0 +1,596 @@
+#!/bin/env bash
+
+# Copyright (c) 2021 Tuncay D.
+# MIT License, see LICENSE
+
+# Debugging.  Print out every line that is executed by the Bash interpreter.
+# Alternatively run the script with "bash -x scap".  Or add "set -x" to enable
+# and "set +x" to disable the messages to a small area in the script only.
+#set -x
+
+# Stop execution of script, ...
+# -u ... if an unbound variable in the script is used.
+# -e ... if any command in the script has a non zero exit status.
+# -o pipefail ... if any command in the current pipeline has a non zero exit
+# status.
+set -eu -o pipefail
+
+# Leave an message on exit with an error.
+err_report() {
+  echo "errexit on line $(caller)" >&2
+}
+trap err_report ERR
+
+
+#
+# = USER SETTINGS =
+#
+
+# User settings and files to read from, if available.  At default, this is the
+# location where the run_script and original_rom are placed.
+set_config_dir="$HOME/.config/scap"
+
+# Storage buffer of temporary files, that persist until manually deleted.
+# These files should help reducing time consuming repeated steps, such as
+# downloading same files.
+set_cache_dir="$HOME/.cache/scap"
+
+# The directory to save the patched Romhacks and its folders to.  It can be an
+# absolute or relative path, like the "." for current working directory of the
+# terminay.  This is the main directory, where for each Romhack a new
+# sub-directory is created.  All parts of the path are created automatically.
+set_output_dir="."
+
+# Filename of the unmodified ROM to use for the patch.  If this is a filename
+# without a directory part, then the ROM file will be looked up in the
+# "config_dir".  Alternatively this can be an absolute or relative path,
+# starting from current working directory downwards.
+set_original_rom="Super Mario World (U) [!].smc"
+
+# Fullpath to or program name of flips-linux, the Floating IPS.  Note that the
+# "config_dir" will be added to the environmetal "PATH" variable.  Therefore
+# this will be looked up in "config_dir" as well and you can just put the
+# executable to this directory, if it is not installed.
+set_flips_app="flips"
+
+# A special script that is executed at the end of the main scap program, if
+# commandline option "-x" is given or the variable set_run_game set to 1.  The
+# RUN command or script is mainly used to immadiately start the game with an
+# emulator. 
+# If this is a filename without directory part, then the script file will be
+# looked up in the "config_dir".  Alternatively this can be an absolute or
+# relative path, starting from current working directory downwards.
+set_run_script="run.sh"
+
+# -c
+# Will clear the "cache_dir" in the beginning before proceeding with the
+# script.
+# 0 = none 
+# 1 = clear files
+set_clear_cache=0
+
+# -C
+# 1 = Disable clear_cache even if it is enabled through commandline option.
+disable_clear_cache=0
+
+# -m
+# Print some meta information about the Romhack parsed from the website.
+# 0 = none
+# 1 = print infos
+set_meta_print=0
+
+# -M
+# 1 = Disable meta_print even if it is enabled through commandline option.
+disable_meta_print=0
+
+# -w
+# Print the fullpath to the final created Romhack file that is ready to play.
+# 0 = none
+# 1 = print path
+set_which_print=0
+
+# -W
+# 1 = Disable which_print even if it is enabled through commandline option.
+disable_which_print=0
+
+# -x
+# Execute the Run Command with the output Romhack file.
+# 0 = none
+# 1 = execute command
+set_run_game=0
+
+# -X
+# 1 = Disable run_game even if it is enabled through commandline option.
+disable_run_game=0
+
+# -p
+# Read the first line from STDIN pipe and use it as URL.  Has higher priority
+# over commandline option -u.
+# 0 = none
+# 1 = read stdin 
+set_stdin_pipe=0
+
+# -P
+# 1 = Disable stdin_pipe even if it is enabled through commandline option.
+disable_stdin_pipe=0
+
+# Weblink to the project's page at smwcentral.net.  This can be an URL or ID
+# number, in which case the URL is automatically added.  Default is empty,
+# because usually this is intended to be set by commandline option for
+# flexibility.
+# Example: "https://www.smwcentral.net/?p=section&a=details&id=16059"
+set_game_url=""
+
+
+#
+# = MAIN =
+#
+
+cache_dir=$(realpath -mL "$set_cache_dir")
+config_dir=$(realpath -mL "$set_config_dir")
+
+if [ -d "$config_dir" ]; then
+    PATH=$config_dir:$PATH
+    export PATH
+fi
+
+# Note, the config_dir and cache_dir should be finalized before getopts,
+# because they are not changing anymore.  All other settings come after
+# getopts, because getopts shows their default value before they get updated by
+# commandline options.
+while getopts ": hvcCmMwWxXzZ f: i: r: d: u:" option; do
+    case ${option} in
+        h ) 
+            echo "scap - smwcentral.net AutoPatcher"
+            echo ""
+            echo "USAGE"
+            echo ""
+            echo "  scap [OPTIONS] [-d DIR] [-u URL|ID]"
+            echo "  scap -u URL"
+            echo "  scap -mwx -u \"https://www.smwcentral.net/?p=section&a=details&id=16059\""
+            echo "  scap -z -d \"\$HOME/smwcentral/\""
+            echo ""
+            echo "OPTIONS"
+            echo ""
+            echo "  -h      print this help and exit"
+            echo "  -v      print version and exit"
+            echo ""
+            echo "  -c      clear all files from cache folder"
+            echo "  -C      do not clear cache folder"
+            echo "  -m      print some meta information about the Romhack"
+            echo "  -M      do not print meta information"
+            echo "  -w      print the fullpath of the patched Romhack file"
+            echo "  -W      do not print path of Romhack file"
+            echo "  -x      execute the RUN command at the end of script"
+            echo "  -X      do not execute the RUN command"
+            echo "  -z      read in first line from STDIN pipe as URL, has"
+            echo "          higher priority than option -u"
+            echo "  -Z      do not read from STDIN pipe"
+            echo ""
+            echo "  -f CMD"
+            echo "          flips_app: command name or path to external program"
+            echo "          flips - Floating IPS, will be looked up in \$PATH",
+            echo "          default=\"$set_flips_app\""
+            echo ""
+            echo "  -i FILE"
+            echo "          original_rom: filename or path to the original and"
+            echo "          unmodified ROM for input, if this is a filename"
+            echo "          without directory part in it, then it will be"
+            echo "          looked up under config directory",
+            echo "          default=\"$set_original_rom\""
+            echo ""
+            echo "  -r FILE"
+            echo "          run_script: filename or path to the RUN command"
+            echo "          script file, which will be executed if the -x"
+            echo "          option or run_game setting is set, the default"
+            echo "          location for this file is in the config directory,"
+            echo "          the first argument '\$1' inside the script is the"
+            echo "          fullpath to the generated .smc Romhack game,"
+            echo "          default=\"$set_run_script\""
+            echo ""
+            echo "  -d DIR"
+            echo "          output_dir: the main directory where the created"
+            echo "          folders and Romhacks are saved to, this can be an"
+            echo "          absolute or relative path,"
+            echo "          default=\"$set_output_dir\""
+            echo ""
+            echo "  -u URL|ID"
+            echo "          game_url: source adress of project page at"
+            echo "          smwcentral.net to parse the HTML, also this can be"
+            echo "          just the ID, in which case the URL will be added"
+            echo "          automatically,"
+            echo "          default=\"$set_game_url\""
+            echo ""
+            echo "CURRENT SETTINGS"
+            echo ""
+            echo "  config_dir"
+            echo "          here goes optional configuration stuff, it is the"
+            echo "          default place to look for the original_rom and"
+            echo "          the patch program flips_app,"
+            echo "          current=\"$config_dir\""
+            echo ""
+            echo "  cache_dir"
+            echo "          to help decreasing the amount of repeated work,"
+            echo "          such as downloads, any such intermediate file goes"
+            echo "          to this place"
+            echo "          current=\"$cache_dir\""
+            echo ""
+            echo "MIT License 2021 Tuncay D."
+            exit 0
+            ;;
+        v ) 
+            echo "0.1"
+            exit 0
+            ;;
+        c ) 
+            set_clear_cache=1
+            ;;
+        C )
+            disable_clear_cache=1
+            ;;
+        m ) 
+            set_meta_print=1
+            ;;
+        M )
+            disable_meta_print=1
+            ;;
+        w ) 
+            set_which_print=1
+            ;;
+        W )
+            disable_which_print=1
+            ;;
+        x ) 
+            set_run_game=1
+            ;;
+        X )
+            disable_run_game=1
+            ;;
+        z )
+            set_stdin_pipe=1
+            ;;
+        Z )
+            disable_stdin_pipe=1
+            ;;
+        f ) 
+            set_flips_app="$OPTARG"
+            ;;
+        r ) 
+            set_run_script="$OPTARG"
+            ;;
+        i ) 
+            set_original_rom="$OPTARG"
+            ;;
+        d ) 
+            set_output_dir="$OPTARG"
+            ;;
+        u ) 
+            set_game_url="$OPTARG"
+            ;;
+        \? ) 
+            echo "Invalid Option: -$OPTARG" 1>&2
+            exit 1
+            ;;
+    esac
+done
+
+#
+# CONFIG: Finalize script configuration based on user settings and commandline.
+#
+
+if [ $disable_clear_cache -eq 1 ]; then
+    clear_cache=0
+else
+    clear_cache=$set_clear_cache
+fi
+
+if [ $disable_meta_print -eq 1 ]; then
+    meta_print=0
+else
+    meta_print=$set_meta_print
+fi
+
+if [ $disable_which_print -eq 1 ]; then
+    which_print=0
+else
+    which_print=$set_which_print
+fi
+
+if [ $disable_run_game -eq 1 ]; then
+    run_game=0
+else
+    run_game=$set_run_game
+fi
+
+if [ $disable_stdin_pipe -eq 1 ]; then
+    stdin_pipe=0
+else
+    stdin_pipe=$set_stdin_pipe
+fi
+
+# File must exist.  If it is missing a slash in path, then it is looked up from
+# "config_dir".
+if [[ "$set_original_rom" != */* ]]; then
+    original_rom=$(realpath -eL "$config_dir/$set_original_rom")
+else
+    original_rom=$(realpath -eL "$set_original_rom")
+fi
+
+if [[ "$set_run_script" != */* ]]; then
+    run_script=$(realpath -eL "$config_dir/$set_run_script")
+else
+    run_script=$(realpath -eL "$set_run_script")
+fi
+
+output_dir=$(realpath -mL "$set_output_dir")
+game_url="$set_game_url"
+flips_app=$(which "$set_flips_app")
+
+#
+# START: Now start working on files and folders and with begin operation.
+#
+
+function clear_cache() {
+    rm -f "$cache_dir"/*
+}
+
+if [ "$clear_cache" -eq 1 ]; then
+    clear_cache
+    trap clear_cache EXIT
+fi
+mkdir -p "$cache_dir"
+
+# Check for correct file of unmodified original_rom.
+rom_md5file="$cache_dir/rom.md5"
+echo "cdd3c8c37322978ca8669b34bc89c804  $original_rom" > "$rom_md5file"
+md5sum --quiet --strict --check "$rom_md5file"
+if [ $? -ne 0 ]; then
+    exit 1
+fi
+
+# Get first line from stdin and use it as URL.
+if [ "$stdin_pipe" -eq 1 ]; then
+    # Read first line from stdin pipe only, if there is something.
+    if [ ! -t 0 ]; then
+        while read -r line ; do
+            game_url="$line"
+            break
+        done
+    fi
+fi
+
+# Extract game_id from url.  Add url part, if missing.  The user can basically
+# either give a full smwcentral.net url of the game page or an id only.
+if [[ $game_url =~ ^[0-9]+$ ]]; then
+    game_id="$game_url"
+    game_url="https://www.smwcentral.net/?p=section&a=details&id=$game_id"
+elif [[ $game_url =~ smwcentral.net/.*id=[0-9]+ ]]; then
+    game_id=$(echo "$game_url" | grep -Eio 'id=[0-9]+' | cut -c 4-)
+else
+    game_id=""
+fi
+if [ "$game_id" == "" ]; then
+    exit 1
+fi
+
+# Download the webpage of the game from smwcentral.net.
+game_html="$cache_dir/$game_id.html"
+if [ ! -f "$game_html" ]; then
+
+    function delete_game_html() {
+        echo "ERROR! Download failed."
+        rm -f "$game_html"
+    }
+    trap delete_game_html INT
+    trap delete_game_html ERR
+
+    # Finally download the projects html page.
+    curl --silent --fail "$game_url" --output "$game_html" 
+    if [ $? -ne 0 ]; then
+        delete_game_html 
+        exit 1
+    fi
+
+    # If the title-tag of the html contains "Error", then the page probably
+    # does not exist or any other error happened.
+    tag='<title>Error - SMW Central</title>'
+    if [ $(grep --count "$tag" "$game_html") -ne 0 ]; then
+        delete_game_html 
+        exit 1
+    fi
+fi
+
+#
+# HTML: Parse the downloaded game HTML file.
+#
+
+# Used as part of the following commands.
+xmlcmd="xmllint --noblanks --nowarning --html --xpath"
+
+# Extract TITLE
+xpath='//*/td[@class="cell1"]/text()[contains(., "File Name:")]
+/../../td[@class="cell2"]/a/text()' 
+html_title=$($xmlcmd "$xpath" "$game_html" 2> /dev/null)
+
+if [ "$html_title" == "" ]; then
+    echo "ERROR! Could not parse game title from HTML file."
+    exit 1
+fi
+
+# Extract LINK
+xpath='//*/td[@class="cell1"]/text()[contains(., "File Name:")]
+/../../td[@class="cell2"]/a/@href' 
+html_link=$($xmlcmd "$xpath" "$game_html" 2> /dev/null \
+    | tr -d '" ' | sed 's\href=\https:\')
+
+if [ "$html_link" == "" ]; then
+    echo "ERROR! Could not parse download link from HTML file."
+    exit 1
+fi
+
+if [ $set_meta_print -eq 1 ]; then
+    # Extract DATE
+    xpath='//*/td[@class="cell1"]/text()[contains(., "Added:")]
+    /../../td[@class="cell2"]/time[@datetime]/text()' 
+    html_date=$($xmlcmd "$xpath" "$game_html" 2> /dev/null \
+        | cut -c -10)
+
+    # Extract AUTHORS
+    xpath='//*/td[@class="cell1"]/text()[contains(., "Authors:")]
+    /../../td[@class="cell2"]/span/a/text()' 
+    html_authors=$($xmlcmd "$xpath" "$game_html" 2> /dev/null \
+        | tr '\n' ',' | sed 's/,/, /' | sed 's/, *$//' || : )
+
+    # Some pages may don't have any links in AUTHORS.
+    if [ "$html_authors" == "" ]; then
+        # Extract AUTHORS
+        xpath='//*/td[@class="cell1"]/text()[contains(., "Authors:")]
+        /../../td[@class="cell2"]/text()' 
+        html_authors=$($xmlcmd "$xpath" "$game_html" 2> /dev/null \
+        | sed -e 's/^\s*//' -e 's/\s*$//' -e '/^$/d') 
+    fi
+
+    # Extract TYPE
+    xpath='//*/td[@class="cell1"]/text()[contains(., "Type:")]
+    /../../td[@class="cell2"]/text()' 
+    html_type=$($xmlcmd "$xpath" "$game_html" 2> /dev/null \
+        | sed -e 's/^\s*//' -e 's/\s*$//' -e '/^$/d') 
+
+    # Print meta info
+    echo "Title:        $html_title"
+    echo "Date:         $html_date"
+    echo "Authors:      $html_authors"
+    echo "Type:         $html_type"
+    echo "Download:     $html_link"
+fi
+
+#
+# CREATE: Download Romhack and patch the ROM
+#
+
+# Convert the title to a name, that can be used easily in a path.
+game_name=$(echo "$html_title" | tr ':|' '-' | tr -d '`!?\/"><' | tr -d "'")
+game_dir="$output_dir"/"$game_name"_"$game_id"
+game_dir=$(realpath -mL "$game_dir")
+
+# Do not download or patch, if the Romhack directory already exists.
+if [ ! -d "$game_dir" ]; then
+
+    function delete_patch_files() {
+        rm -f "$game_dir"/*.bps
+    }
+    trap delete_patch_files EXIT
+
+    function delete_game_dir() {
+        echo "ERROR! Download or creation of Romhack failed."
+        rm -f "$game_dir"/*
+        rmdir --ignore-fail-on-non-empty "$game_dir"
+    }
+    trap delete_game_dir INT
+    trap delete_game_dir ERR
+
+    mkdir -p "$game_dir"
+
+    #
+    # CURL: Download patch archive and unpack all patch files
+    #
+
+    game_zip=$game_dir/$(echo "$html_link" | grep -Eio '/[^/]*\.zip')
+    game_zip=$(realpath -mL "$game_zip")
+
+    if [ ! -f "$game_zip" ]; then
+        curl --silent "$html_link" --output "$game_zip" 
+        unzip -q -u -U -j "$game_zip" "*.bps" -d "$game_dir"
+
+        # If it can't unpack .bps patch files, then probably something went
+        # wrong about the parch archive file.
+        if [ $? -ne 0 ]; then
+            delete_game_dir 
+            exit 1
+        fi
+    fi
+
+    #
+    # FLIPS: Apply all patches and create new ROM files
+    #
+
+    # Strip away directory and extension parts 
+    rom_noext=${original_rom##*/}
+    rom_noext=${rom_noext%.*}
+
+    for patch_file in "$game_dir"/*.bps; do
+        patch_file=$(realpath -eL "$patch_file")
+        patch_noext=${patch_file##*/}
+        patch_noext=${patch_noext%.*}
+
+        # Filename templates
+        output_path="$game_dir"/"$rom_noext"_"$game_id"_"$patch_noext".smc
+        # output_path="$game_dir"/SMW_"$patch_noext".smc
+        # output_path="$game_dir"/"$patch_noext"_"$game_id"-"$rom_noext".smc
+        
+        # Patch the ROM with the patch file
+        "$flips_app" -a "$patch_file" "$original_rom" "$output_path" > /dev/null 2>&1 
+        if [ $? -ne 0 ]; then
+            delete_game_dir 
+            exit 1
+        fi
+        # Romhack successfully created
+        if [ $meta_print -eq 1 ]; then
+            echo "Created:      $output_path"
+        fi
+
+        # The downloaded HTML file is not needed, but can be kept for archival
+        # reasons.  Also it contains more informations and comments.
+        cp -f -u "$game_html" "$game_dir"
+    done
+fi
+
+#
+# RUN: Play game and print path
+# 
+
+# Specify how many versions of the Romhack should be played.  This limit is
+# only useful, if too many versions per project are there, so you don't get
+# stuck for too long.  Also some programs like "xdg-open" will close
+# immadiately after they run another process.  This means that all Romhacks are
+# tried to run at the same time, executing the emulator multiple times.  That
+# is why this hard max limit here could be required.
+max_run_limit=1
+# Counts how many games are played.
+run_counter=0
+
+# For each final .smc Romhack file, possibly print the fullpath or execute a
+# command to play the game.
+for smc_file in "$game_dir"/*.smc; do
+    smc_file=$(realpath -eL "$smc_file")
+
+    if [ $which_print -eq 1 ]; then
+        echo "$smc_file"
+    fi
+    
+    # Execute RUN command only, if a run script exists and the executable
+    # option is set (either run_game variable or -x option).
+    if [ "$run_game" -eq 1 ]; then
+        if [ -f "$run_script" ]; then
+
+            # RUN COMMAND
+            "$run_script" "$smc_file" 2> /dev/null
+
+            if [ $? -ne 0 ]; then
+                echo "ERROR! Something went wrong executing the RUN script."
+                exit 1
+            fi
+            let "++run_counter"
+        fi
+    fi
+
+    # Use break command if you don't want run all Romhacks.  Without break
+    # the RUN COMMAND will be executed with every Romhack version.
+    #break
+
+    # A variable limit to how many games can be played per project.
+    if [ $run_counter -ge $max_run_limit ]; then
+        break
+    fi
+done
+
