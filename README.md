@@ -63,7 +63,7 @@ require any root rights.)
 ```bash
 git clone "https://github.com/thingsiplay/scap"
 cd scap
-chdmod +x scap
+chmod +x scap
 cp scap "$(systemd-path user-binaries)"
 ```
 
