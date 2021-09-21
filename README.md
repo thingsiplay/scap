@@ -6,7 +6,7 @@ automatically into playable ROMs and saves them in a structured way.
 
 - **Author**: Tuncay D.
 - **License**: [MIT License](LICENSE)
-- Source: [Github](https://github.com/thingsiplay/scap) 
+- **Source**: [Github](https://github.com/thingsiplay/scap) 
 
 ## About
 
