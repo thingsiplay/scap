@@ -44,9 +44,9 @@ right away with your favorite emulator, look at section
 [Run Script](#run-script).
    
 ```bash
-DIR="$HOME/smwcentral/$(date +%F)"
-CLIP="$(xclip -out -selection clipboard -rmlastnl)"
-$ scap -x -d "$CLIP" -u "$CLIP"
+$ DIR="$HOME/smwcentral/$(date +%F)"
+$ CLIP="$(xclip -out -selection clipboard -rmlastnl)"
+$ scap -x -d "$DIR" -u "$CLIP"
 ```
 
 If you save this as a script and bind it to a keyboard shortcut, then you don't
